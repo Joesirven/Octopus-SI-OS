@@ -2468,6 +2468,14 @@ function focusAppropriateClientWindow() {
   return revealClientWindow(selectedClientWindow(undefined) ?? createWindow());
 }
 
+function ignoreReactivationWhileClosing(source) {
+  if (!clientWindowClose.isClosingWindows()) return false;
+  void appendClientLog("info", "client.reactivation_ignored_while_closing", { source }).catch((error) => {
+    console.error("Client log write failed:", error);
+  });
+  return true;
+}
+
 function authenticatedClientWindowToken(win) {
   const entry = clientWindows.entryForWindow(win);
   if (!entry?.accessToken) return "";
@@ -2503,6 +2511,7 @@ if (!gotSingleInstanceLock) {
   saveClientLaunchSelection(clientLaunchSelectionPath, { home: resolveOctopusHome(), codexHome: resolveOperatorCodexHome() });
   app.on("second-instance", () => {
     void app.whenReady().then(() => {
+      if (ignoreReactivationWhileClosing("second-instance")) return;
       ensureRuntimeHost();
       focusAppropriateClientWindow();
       void initializeRuntimeHost().catch((error) => appendClientLog("error", "client.startup_failed", {
@@ -2524,6 +2533,7 @@ if (!gotSingleInstanceLock) {
     }));
     app.on("activate", () => {
       setAppIdentity();
+      if (ignoreReactivationWhileClosing("activate")) return;
       focusAppropriateClientWindow();
     });
   });

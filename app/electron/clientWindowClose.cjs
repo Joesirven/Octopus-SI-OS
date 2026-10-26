@@ -236,11 +236,15 @@ function createClientWindowCloseHost({ authorize, accessTokenForSender, onQuitAp
     return current.promise;
   }
 
-  function assertCanCreateWindow() {
-    if (committed || action?.phase === "closing") throw new Error("The client is closing its windows.");
+  function isClosingWindows() {
+    return committed || action?.phase === "closing";
   }
 
-  return { assertCanCreateWindow, register, requestLogout, requestQuit, resolve, trackWindow, unregister };
+  function assertCanCreateWindow() {
+    if (isClosingWindows()) throw new Error("The client is closing its windows.");
+  }
+
+  return { assertCanCreateWindow, isClosingWindows, register, requestLogout, requestQuit, resolve, trackWindow, unregister };
 }
 
 module.exports = { createClientWindowCloseHost };

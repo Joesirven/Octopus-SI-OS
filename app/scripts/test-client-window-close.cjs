@@ -228,3 +228,69 @@ test("every desktop IPC sender detaches on document loss and closes once on dest
   assert.deepEqual(effects, [[11, "pause"], [1, "pause"], [11, "close"], [1, "close"]]
     .flatMap(([id, action]) => [`views:${id}`, `permissions:${id}`, `settings:${id}`, `${action}:${id}`]));
 });
+
+function findCalls(root, owner, channel) {
+  const found = [];
+  (function visit(node) {
+    if (ts.isCallExpression(node) && node.expression.getText(main) === owner && node.arguments[0]?.text === channel) found.push(node);
+    ts.forEachChild(node, visit);
+  })(root);
+  return found;
+}
+
+test("the host reports closing during a quit's closing phase and after commit, not before", async () => {
+  const f = fixture(), a = f.add(1), b = f.add(2);
+  assert.equal(f.host.isClosingWindows(), false);
+  f.quit(); assert.equal(f.host.isClosingWindows(), false);
+  await reply(a, true); assert.equal(f.host.isClosingWindows(), false);
+  await reply(b, false); assert.equal(f.host.isClosingWindows(), false);
+  f.quit(); await reply(a, true); await reply(b, true);
+  assert.equal(f.host.isClosingWindows(), true); assert.throws(() => f.host.assertCanCreateWindow(), /closing/);
+  await tick(); await tick();
+  assert.ok(a.dead && b.dead); assert.equal(f.host.isClosingWindows(), true); assert.throws(() => f.host.assertCanCreateWindow(), /closing/);
+});
+
+test("a vetoed quit and an unrelated logout never report closing", async () => {
+  const f = fixture(), a = f.add(1), b = f.add(2, true, "other");
+  f.quit(); await reply(a, true); await reply(b, true); a.veto = true; await tick();
+  assert.equal(a.dead, false); assert.equal(f.host.isClosingWindows(), false); f.host.assertCanCreateWindow();
+  const pending = b.bridge.lockAccess(); assert.equal(f.host.isClosingWindows(), false);
+  await reply(b, true); await pending; assert.equal(f.host.isClosingWindows(), false);
+});
+
+test("main ignores and logs re-activation and second launch while closing, before any focus, creation or runtime start", async () => {
+  const helper = main.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "ignoreReactivationWhileClosing");
+  assert.ok(helper);
+  const f = fixture(), a = f.add(1), logs = [];
+  const ignore = Function("clientWindowClose", "appendClientLog", "console", `${helper.getText(main)}; return ignoreReactivationWhileClosing;`)(
+    f.host, async (...entry) => { logs.push(entry); }, { error() {} },
+  );
+  assert.equal(ignore("activate"), false); assert.deepEqual(logs, []);
+  f.quit(); await reply(a, true);
+  assert.equal(ignore("activate"), true); assert.equal(ignore("second-instance"), true);
+  assert.deepEqual(logs, [
+    ["info", "client.reactivation_ignored_while_closing", { source: "activate" }],
+    ["info", "client.reactivation_ignored_while_closing", { source: "second-instance" }],
+  ]);
+  const failing = Function("clientWindowClose", "appendClientLog", "console", `${helper.getText(main)}; return ignoreReactivationWhileClosing;`)(
+    f.host, async () => { throw new Error("disk full"); }, { error: (...args) => logs.push(["console", ...args]) },
+  );
+  assert.equal(failing("activate"), true); await tick();
+  assert.equal(logs.at(-1)[0], "console"); assert.match(logs.at(-1)[2].message, /disk full/);
+
+  const order = (handler, source, later) => {
+    const text = handler.arguments[1].getText(main);
+    const guard = text.indexOf(`if (ignoreReactivationWhileClosing("${source}")) return;`);
+    assert.notEqual(guard, -1, `${source} handler must return early while closing`);
+    for (const call of later) {
+      const index = text.indexOf(call);
+      assert.notEqual(index, -1, `${source} handler calls ${call}`);
+      assert.ok(guard < index, `${source} handler consults the closing query before ${call}`);
+    }
+  };
+  const [activate, ...otherActivates] = findCalls(main, "app.on", "activate");
+  const [secondInstance, ...otherSeconds] = findCalls(main, "app.on", "second-instance");
+  assert.ok(activate && secondInstance); assert.equal(otherActivates.length + otherSeconds.length, 0);
+  order(activate, "activate", ["focusAppropriateClientWindow()"]);
+  order(secondInstance, "second-instance", ["ensureRuntimeHost()", "focusAppropriateClientWindow()", "initializeRuntimeHost()"]);
+});
