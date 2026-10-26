@@ -124,6 +124,15 @@ The script reads one request JSON on stdin and prints one verdict on stdout:
 
 - **Any language.** Shell, Python, JavaScript, or a compiled binary named in
   the same `script` field.
+  A verifier that uses `python3` (declared in `executable_commands` or named by
+  the `#!/usr/bin/env` line) runs the pinned `python3`: on macOS the one in the
+  Command Line Tools directory, or the one in the directory named by
+  `OCTOPUS_VERIFIER_PYTHON_DIR`. Only `python3` is redirected, the host `PATH`
+  does not choose it, and an interpreter the sandbox cannot read is an error,
+  not a fallback. The verdict details record the canonical interpreter as
+  `python3_interpreter`. Do not name `/usr/bin/python3`: it is the Xcode shim,
+  it fails inside the sandbox, and a sandboxed verifier that names it is refused
+  when it is prepared.
 - **Sandboxed by default.** The process gets its package directory and a scratch copy of
   the payload. It gets no ledger, no registry, no network unless declared.
   An explicit disabled sandbox mode opts out of OS isolation; see

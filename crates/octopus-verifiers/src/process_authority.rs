@@ -1064,6 +1064,96 @@ fn executable_file(path: &Path) -> bool {
     }
 }
 
+pub const PYTHON_DIRECTORY_VARIABLE: &str = "OCTOPUS_VERIFIER_PYTHON_DIR";
+
+#[cfg(target_os = "macos")]
+const MACOS_DEFAULT_PYTHON_DIRECTORY: &str = "/Library/Developer/CommandLineTools/usr/bin";
+
+#[cfg(target_os = "macos")]
+const MACOS_XCODE_SELECTOR_PYTHON: &str = "/usr/bin/python3";
+
+/// True when `path` is the Xcode selector shim `/usr/bin/python3`, named directly or through
+/// a symbolic link. The shim consults license state, the Xcode `Info.plist`, the SDK trees and
+/// a user cache, so it cannot run inside the verifier sandbox. Always false off macOS.
+pub fn is_xcode_selector_python3(path: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let shim = Path::new(MACOS_XCODE_SELECTOR_PYTHON);
+        path == shim || std::fs::canonicalize(path).is_ok_and(|canonical| canonical == shim)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+/// Returns the canonical `python3` that a sandboxed verifier may run. `configured` is the
+/// value of `OCTOPUS_VERIFIER_PYTHON_DIR`; when it is absent, macOS uses the Command Line
+/// Tools directory and other systems pin nothing (`Ok(None)`). Any problem is an error:
+/// there is no fallback to the host search path or to another install.
+pub fn python_interpreter(configured: Option<&OsStr>) -> Result<Option<PathBuf>, String> {
+    let (directory, origin) = match configured {
+        Some(value) if value.is_empty() => {
+            return Err(format!(
+                "{PYTHON_DIRECTORY_VARIABLE} is set but empty; unset it to use the default or name a directory that holds python3"
+            ));
+        }
+        Some(value) => (PathBuf::from(value), PYTHON_DIRECTORY_VARIABLE),
+        #[cfg(target_os = "macos")]
+        None => (
+            PathBuf::from(MACOS_DEFAULT_PYTHON_DIRECTORY),
+            "the Command Line Tools default",
+        ),
+        #[cfg(not(target_os = "macos"))]
+        None => return Ok(None),
+    };
+    let fix = format!(
+        "install the Command Line Tools with 'xcode-select --install', or set {PYTHON_DIRECTORY_VARIABLE} to a directory that holds a python.org framework python3"
+    );
+    if !directory.is_absolute() {
+        return Err(format!(
+            "python3 directory '{}' from {origin} is not an absolute path; {fix}",
+            directory.display()
+        ));
+    }
+    if !directory.is_dir() {
+        return Err(format!(
+            "python3 directory '{}' from {origin} does not exist; {fix}",
+            directory.display()
+        ));
+    }
+    let interpreter = directory.join("python3");
+    let canonical = std::fs::canonicalize(&interpreter).map_err(|error| {
+        format!(
+            "python3 interpreter '{}' from {origin} cannot be resolved: {error}; {fix}",
+            interpreter.display()
+        )
+    })?;
+    if !executable_file(&canonical) {
+        return Err(format!(
+            "python3 interpreter '{}' from {origin} is not an executable file; {fix}",
+            interpreter.display()
+        ));
+    }
+    #[cfg(target_os = "macos")]
+    if !macos_sandbox_reads_interpreter_prefix(&canonical) {
+        return Err(format!(
+            "python3 interpreter '{}' from {origin} keeps its standard library outside the paths the verifier sandbox can read; use the Command Line Tools python3 or a python.org framework Python, or set {PYTHON_DIRECTORY_VARIABLE} to a directory that holds one",
+            canonical.display()
+        ));
+    }
+    Ok(Some(canonical))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_sandbox_reads_interpreter_prefix(canonical_interpreter: &Path) -> bool {
+    macos_runtime_roots()
+        .iter()
+        .any(|root| canonical_interpreter.starts_with(root))
+        || !macos_executable_bundle_roots(canonical_interpreter).is_empty()
+}
+
 #[cfg(target_os = "macos")]
 fn prepare_macos(
     authority: &ProcessAuthority,
@@ -2215,6 +2305,100 @@ mod future_write_authority_tests {
             octopus_descriptors::ProcessSandboxMode::Enforced,
         )
         .is_err());
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod python_interpreter_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    const UNREADABLE_PREFIX_ERROR: &str =
+        "keeps its standard library outside the paths the verifier sandbox can read";
+
+    fn executable(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).expect("parent directory");
+        std::fs::write(path, b"#!/bin/sh\n").expect("executable file");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+            .expect("executable mode");
+    }
+
+    #[test]
+    fn python_interpreter_rejects_unreadable_or_missing_interpreters() {
+        let root = tempfile::tempdir().expect("temporary root");
+
+        let empty = root.path().join("empty");
+        std::fs::create_dir(&empty).expect("empty directory");
+        let error = python_interpreter(Some(empty.as_os_str())).unwrap_err();
+        assert!(error.contains(&empty.display().to_string()), "{error}");
+
+        let absent = root.path().join("absent");
+        let error = python_interpreter(Some(absent.as_os_str())).unwrap_err();
+        assert!(error.contains(&absent.display().to_string()), "{error}");
+
+        let real = root.path().join("share/cpython-3.12-macos-aarch64-none");
+        executable(&real.join("bin/python3.12"));
+        std::fs::create_dir_all(real.join("lib/python3.12")).expect("standard library directory");
+        let launcher = root.path().join("bin");
+        std::fs::create_dir(&launcher).expect("launcher directory");
+        std::os::unix::fs::symlink(real.join("bin/python3.12"), launcher.join("python3"))
+            .expect("launcher link");
+        let error = python_interpreter(Some(launcher.as_os_str())).unwrap_err();
+        assert!(error.contains(UNREADABLE_PREFIX_ERROR), "{error}");
+        assert!(!error.contains("Homebrew"), "{error}");
+
+        let error = python_interpreter(Some(OsStr::new("/usr/bin"))).unwrap_err();
+        assert!(error.contains(UNREADABLE_PREFIX_ERROR), "{error}");
+
+        assert!(python_interpreter(Some(OsStr::new("relative/bin")))
+            .unwrap_err()
+            .contains("not an absolute path"));
+        assert!(python_interpreter(Some(OsStr::new("")))
+            .unwrap_err()
+            .contains("is set but empty"));
+    }
+
+    #[test]
+    fn python_interpreter_accepts_framework_layouts_and_names_the_canonical_file() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let bin = root.path().join("Python.framework/Versions/3.14/bin");
+        executable(&bin.join("python3"));
+        assert_eq!(
+            python_interpreter(Some(bin.as_os_str())),
+            Ok(Some(std::fs::canonicalize(bin.join("python3")).unwrap()))
+        );
+
+        let tools = Path::new(MACOS_DEFAULT_PYTHON_DIRECTORY);
+        if tools.join("python3").exists() {
+            let canonical = std::fs::canonicalize(tools.join("python3")).unwrap();
+            assert_eq!(python_interpreter(None), Ok(Some(canonical.clone())));
+            assert!(canonical.starts_with("/Library/Developer/CommandLineTools"));
+        } else {
+            eprintln!("skipped: the Command Line Tools python3 is not installed");
+        }
+
+        let framework = Path::new("/Library/Frameworks/Python.framework/Versions/Current/bin");
+        if framework.join("python3").exists() {
+            assert_eq!(
+                python_interpreter(Some(framework.as_os_str())),
+                Ok(Some(std::fs::canonicalize(framework.join("python3")).unwrap()))
+            );
+        } else {
+            eprintln!("skipped: the python.org framework Python is not installed");
+        }
+    }
+
+    #[test]
+    fn xcode_selector_python3_is_recognized_directly_and_through_links() {
+        assert!(is_xcode_selector_python3(Path::new("/usr/bin/python3")));
+        assert!(!is_xcode_selector_python3(Path::new("/bin/sh")));
+        assert!(!is_xcode_selector_python3(Path::new(
+            "/Library/Developer/CommandLineTools/usr/bin/python3"
+        )));
+        let root = tempfile::tempdir().expect("temporary root");
+        let link = root.path().join("python3");
+        std::os::unix::fs::symlink("/usr/bin/python3", &link).expect("link to the shim");
+        assert!(is_xcode_selector_python3(&link));
     }
 }
 

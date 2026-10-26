@@ -197,6 +197,7 @@ pub fn pin_verifier_package(
             "error": "pinned verifier package does not contain its declared script"
         }));
     };
+    reject_xcode_selector_python3(&ctx.descriptor, &entrypoint.contents)?;
     validate_pinned_entrypoint(&ctx.descriptor, &entrypoint.contents)?;
     Ok(PinnedVerifierPackage {
         descriptor: ctx.descriptor.clone(),
@@ -413,6 +414,22 @@ fn run_package_process(
     input: &VerificationInput,
     payload_bytes: Vec<u8>,
 ) -> Result<VerificationVerdict, serde_json::Value> {
+    run_package_process_with_python(
+        ctx,
+        input,
+        payload_bytes,
+        std::env::var_os("PATH"),
+        std::env::var_os(process_authority::PYTHON_DIRECTORY_VARIABLE),
+    )
+}
+
+fn run_package_process_with_python(
+    ctx: &PinnedVerifierPackage,
+    input: &VerificationInput,
+    payload_bytes: Vec<u8>,
+    host_path: Option<OsString>,
+    configured_python_directory: Option<OsString>,
+) -> Result<VerificationVerdict, serde_json::Value> {
     let scratch_dir = create_scratch_dir(&ctx.descriptor, &ctx.scratch_root, input)?;
     let script_path = materialize_pinned_package(ctx)?;
     let payload_path = scratch_dir.path.join("payload");
@@ -432,14 +449,53 @@ fn run_package_process(
             "source": e.to_string()
         })
     })?;
-    let environment = verifier_environment().map_err(|error| {
+    let unavailable = |error: String| {
         serde_json::json!({
             "runner": "package_process",
             "verifier": ctx.descriptor.id.as_str(),
             "error": "verifier process environment is unavailable",
             "source": error
         })
-    })?;
+    };
+    let python = if verifier_requires_python3(ctx) {
+        PinnedPython::create(&ctx.scratch_root, configured_python_directory.as_deref())
+            .map_err(unavailable)?
+    } else {
+        None
+    };
+    let environment = verifier_environment_from(
+        host_path,
+        python.as_ref().map(|python| python.directory.as_path()),
+    )
+    .map_err(unavailable)?;
+    let result = run_script_in_environment(
+        ctx,
+        input,
+        &scratch_dir,
+        script_path,
+        &request_bytes,
+        &environment,
+    );
+    match python {
+        Some(python) => match result {
+            Ok(verdict) => Ok(VerificationVerdict {
+                passed: verdict.passed,
+                details: python.recorded_in(verdict.details),
+            }),
+            Err(details) => Err(python.recorded_in(details)),
+        },
+        None => result,
+    }
+}
+
+fn run_script_in_environment(
+    ctx: &PinnedVerifierPackage,
+    input: &VerificationInput,
+    scratch_dir: &ScratchDirectory,
+    script_path: PathBuf,
+    request_bytes: &[u8],
+    environment: &BTreeMap<String, OsString>,
+) -> Result<VerificationVerdict, serde_json::Value> {
     let available_root_slots = BTreeMap::new();
     let Some(pinned_package_dir) = script_path.parent().map(Path::to_path_buf) else {
         return Err(serde_json::json!({
@@ -454,7 +510,7 @@ fn run_package_process(
         .resolve(
             &ctx.repository_root,
             &available_root_slots,
-            &environment,
+            environment,
             [pinned_package_dir],
             [scratch_dir.path.clone()],
             [script_path.clone()],
@@ -488,10 +544,10 @@ fn run_package_process(
     let timeout = process_timeout_from(&ctx.descriptor, &input.params);
     let result = run_process_with_timeout(
         prepared,
-        &environment,
+        environment,
         &scratch_dir.path,
         timeout,
-        Some(&request_bytes),
+        Some(request_bytes),
     );
     match result {
         Ok((true, stdout, stderr)) => script_verdict(&stdout, &stderr),
@@ -750,11 +806,169 @@ impl Drop for ScratchDirectory {
     }
 }
 
-fn verifier_environment() -> Result<BTreeMap<String, OsString>, String> {
-    let path = std::env::var_os("PATH")
+/// The search path is the directory that holds the pinned `python3` link (when the verifier
+/// uses python3) followed by the host entries. No other command is redirected.
+fn verifier_environment_from(
+    host_path: Option<OsString>,
+    pinned_python_directory: Option<&Path>,
+) -> Result<BTreeMap<String, OsString>, String> {
+    let host_path = host_path
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "host PATH is absent".to_string())?;
+    let Some(directory) = pinned_python_directory else {
+        return Ok(BTreeMap::from([("PATH".to_string(), host_path)]));
+    };
+    let path = std::env::join_paths(
+        std::iter::once(directory.to_path_buf()).chain(std::env::split_paths(&host_path)),
+    )
+    .map_err(|error| {
+        format!(
+            "python3 directory '{}' cannot be placed on the verifier search path: {error}",
+            directory.display()
+        )
+    })?;
     Ok(BTreeMap::from([("PATH".to_string(), path)]))
+}
+
+/// A scratch directory that holds one `python3` symbolic link to the validated canonical
+/// interpreter. The sandbox grants execution of the canonical file only; the link and its
+/// ancestors receive metadata access.
+struct PinnedPython {
+    directory: PathBuf,
+    interpreter: PathBuf,
+}
+
+const PINNED_PYTHON_DIRECTORY: &str = "python3-links";
+const PYTHON_RECORD_KEY: &str = "python3_interpreter";
+
+impl PinnedPython {
+    fn create(
+        scratch_root: &Path,
+        configured_python_directory: Option<&std::ffi::OsStr>,
+    ) -> Result<Option<Self>, String> {
+        let Some(interpreter) = process_authority::python_interpreter(configured_python_directory)?
+        else {
+            return Ok(None);
+        };
+        let root = scratch_root.join(PINNED_PYTHON_DIRECTORY);
+        std::fs::create_dir_all(&root).map_err(|error| {
+            format!("python3 link root '{}' cannot be created: {error}", root.display())
+        })?;
+        let root = std::fs::canonicalize(&root).map_err(|error| {
+            format!("python3 link root '{}' cannot be canonicalized: {error}", root.display())
+        })?;
+        let directory = root.join(format!("{}-{}", std::process::id(), unique_nonce()));
+        std::fs::create_dir(&directory).map_err(|error| {
+            format!("python3 link directory '{}' cannot be created: {error}", directory.display())
+        })?;
+        let pinned = Self { directory, interpreter };
+        pinned.link()?;
+        Ok(Some(pinned))
+    }
+
+    #[cfg(unix)]
+    fn link(&self) -> Result<(), String> {
+        let link = self.directory.join("python3");
+        std::os::unix::fs::symlink(&self.interpreter, &link).map_err(|error| {
+            format!(
+                "python3 link '{}' to '{}' cannot be created: {error}",
+                link.display(),
+                self.interpreter.display()
+            )
+        })
+    }
+
+    #[cfg(not(unix))]
+    fn link(&self) -> Result<(), String> {
+        Err("python3 pinning needs symbolic links, which this operating system build does not use".to_string())
+    }
+
+    fn recorded_in(&self, details: serde_json::Value) -> serde_json::Value {
+        match details {
+            serde_json::Value::Object(mut object) => {
+                object.insert(
+                    PYTHON_RECORD_KEY.to_string(),
+                    serde_json::json!(self.interpreter.display().to_string()),
+                );
+                serde_json::Value::Object(object)
+            }
+            other => other,
+        }
+    }
+}
+
+impl Drop for PinnedPython {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.directory);
+    }
+}
+
+fn verifier_requires_python3(ctx: &PinnedVerifierPackage) -> bool {
+    let entrypoint = ctx
+        .files
+        .get(&ctx.descriptor.script)
+        .map(|file| file.contents.as_slice())
+        .unwrap_or_default();
+    names_bare_python3(&ctx.descriptor, entrypoint)
+}
+
+fn names_bare_python3(descriptor: &VerifierDescriptor, entrypoint: &[u8]) -> bool {
+    descriptor.authority.executable_commands.contains("python3")
+        || shebang_commands(entrypoint).iter().any(|command| command == "python3")
+}
+
+/// The programs a text entrypoint's first line names: its interpreter and, for a
+/// `/usr/bin/env` selector, the command that `env` is asked to find.
+fn shebang_commands(entrypoint: &[u8]) -> Vec<String> {
+    let Some(rest) = entrypoint.strip_prefix(b"#!") else {
+        return Vec::new();
+    };
+    let line = rest.split(|byte| *byte == b'\n').next().unwrap_or_default();
+    let line = String::from_utf8_lossy(line);
+    let mut tokens = line.split_whitespace();
+    let Some(interpreter) = tokens.next() else {
+        return Vec::new();
+    };
+    let mut commands = vec![interpreter.to_string()];
+    if Path::new(interpreter).file_name().is_some_and(|name| name == "env") {
+        if let Some(selected) = tokens.find(|token| !token.starts_with('-') && !token.contains('=')) {
+            commands.push(selected.to_string());
+        }
+    }
+    commands
+}
+
+fn reject_xcode_selector_python3(
+    descriptor: &VerifierDescriptor,
+    entrypoint: &[u8],
+) -> Result<(), serde_json::Value> {
+    if descriptor.authority.sandbox_mode == octopus_descriptors::ProcessSandboxMode::Disabled {
+        return Ok(());
+    }
+    let named = descriptor
+        .authority
+        .executable_commands
+        .iter()
+        .cloned()
+        .chain(shebang_commands(entrypoint))
+        .find(|command| {
+            Path::new(command).is_absolute()
+                && process_authority::is_xcode_selector_python3(Path::new(command))
+        });
+    let Some(named) = named else {
+        return Ok(());
+    };
+    Err(serde_json::json!({
+        "runner": "package_process",
+        "verifier": descriptor.id.as_str(),
+        "script": descriptor.script,
+        "error": "verifier names the Xcode selector python3, which cannot run inside the verifier sandbox",
+        "named": named,
+        "required_contract": format!(
+            "Use the bare command python3 instead: start the script with #!/usr/bin/env python3 and declare executable_commands [\"/usr/bin/env\", \"python3\"]. Octopus then runs the python3 in the Command Line Tools directory, or in the directory named by {}.",
+            process_authority::PYTHON_DIRECTORY_VARIABLE
+        ),
+    }))
 }
 
 fn run_process_with_timeout(
@@ -996,6 +1210,9 @@ mod tests {
     fn authored_text_verifier_requires_explicit_interpreter_and_preserves_pins() {
         use std::os::unix::fs::PermissionsExt;
 
+        if !command_line_tools_python3_installed() {
+            return;
+        }
         let package = tempfile::tempdir().unwrap();
         let outside = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(outside.path(), "not granted").unwrap();
@@ -1071,9 +1288,13 @@ mod tests {
         assert!(!changed.passed);
         assert_eq!(changed.details["revision"], 2);
 
-        std::fs::write(&script, format!("#!/usr/bin/python3\n{body}")).unwrap();
+        let interpreter = std::fs::canonicalize(
+            Path::new(COMMAND_LINE_TOOLS_PYTHON_DIRECTORY).join("python3"),
+        )
+        .unwrap();
+        std::fs::write(&script, format!("#!{}\n{body}", interpreter.display())).unwrap();
         ctx.descriptor.authority.executable_commands =
-            std::collections::BTreeSet::from(["/usr/bin/python3".to_string()]);
+            std::collections::BTreeSet::from([interpreter.display().to_string()]);
         let absolute = run_verifier_process(&ctx, &input, b"verified payload".to_vec());
         assert!(
             absolute.passed,
@@ -1103,6 +1324,336 @@ mod tests {
         let verdict = verify_package_process(&ctx, &input, &blobs);
         assert!(!verdict.passed);
         assert_eq!(verdict.details["observed"], "example");
+    }
+
+    #[cfg(unix)]
+    fn write_executable(path: &Path, contents: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn uv_style_python_directory(root: &Path) -> PathBuf {
+        let real = root.join("share/python/cpython-3.12-macos-aarch64-none");
+        write_executable(&real.join("bin/python3.12"), "#!/bin/sh\nexit 97\n");
+        std::fs::create_dir_all(real.join("lib/python3.12")).unwrap();
+        let launcher = root.join("bin");
+        std::fs::create_dir_all(&launcher).unwrap();
+        std::os::unix::fs::symlink(real.join("bin/python3.12"), launcher.join("python3")).unwrap();
+        launcher
+    }
+
+    #[cfg(target_os = "macos")]
+    const COMMAND_LINE_TOOLS_PYTHON_DIRECTORY: &str = "/Library/Developer/CommandLineTools/usr/bin";
+
+    #[cfg(target_os = "macos")]
+    fn command_line_tools_python3_installed() -> bool {
+        let installed = Path::new(COMMAND_LINE_TOOLS_PYTHON_DIRECTORY)
+            .join("python3")
+            .exists();
+        if !installed {
+            eprintln!("skipped: the Command Line Tools python3 is not installed");
+        }
+        installed
+    }
+
+    #[cfg(target_os = "macos")]
+    const UNREADABLE_PREFIX_ERROR: &str =
+        "keeps its standard library outside the paths the verifier sandbox can read";
+
+    #[cfg(target_os = "macos")]
+    const FRAMEWORK_PYTHON_DIRECTORY: &str =
+        "/Library/Frameworks/Python.framework/Versions/Current/bin";
+
+    #[cfg(target_os = "macos")]
+    fn run_python_verifier(
+        body: &str,
+        host_path: &str,
+        python_directory: Option<&Path>,
+    ) -> Result<VerificationVerdict, serde_json::Value> {
+        let package = tempfile::tempdir().unwrap();
+        std::fs::write(package.path().join("verify.py"), format!("#!/usr/bin/env python3\n{body}"))
+            .unwrap();
+        let mut ctx = package_ctx("echo_interpreter");
+        ctx.package_dir = Some(package.path().to_path_buf());
+        ctx.repository_root = package.path().to_path_buf();
+        ctx.scratch_root = package.path().join("scratch");
+        ctx.descriptor.authority.executable_commands =
+            std::collections::BTreeSet::from(["/usr/bin/env".to_string(), "python3".to_string()]);
+        let (_, artifact) = blob(b"echoed payload");
+        let input = test_input(artifact, serde_json::json!({}));
+        let pinned = pin_verifier_package(&ctx).unwrap();
+        run_package_process_with_python(
+            &pinned,
+            &input,
+            b"echoed payload".to_vec(),
+            Some(OsString::from(host_path)),
+            python_directory.map(|directory| directory.as_os_str().to_os_string()),
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    const ECHO_INTERPRETER_BODY: &str = "import json,os,sys\nrequest=json.load(sys.stdin)\nprint(json.dumps({'passed':True,'details':{'received':request['payload_utf8'],'interpreter':os.path.realpath(sys.executable)}}))\n";
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn verifier_python3_ignores_host_path_order() {
+        if !command_line_tools_python3_installed() {
+            return;
+        }
+        let canonical_interpreter = std::fs::canonicalize(
+            Path::new(COMMAND_LINE_TOOLS_PYTHON_DIRECTORY).join("python3"),
+        )
+        .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let failing = root.path().join("exits-97");
+        write_executable(&failing.join("python3"), "#!/bin/sh\nexit 97\n");
+        let uv_style = uv_style_python_directory(&root.path().join("uv"));
+        let layouts = [
+            ("script exiting 97", failing),
+            ("uv style layout", uv_style),
+            ("system shim first", PathBuf::from("/usr/bin")),
+        ];
+        for (name, leading) in layouts {
+            let host_path = format!("{}:/usr/bin:/bin", leading.display());
+            let verdict = run_python_verifier(ECHO_INTERPRETER_BODY, &host_path, None)
+                .unwrap_or_else(|details| panic!("{name}: verifier did not run: {details}"));
+            assert!(verdict.passed, "{name}: {:?}", verdict.details);
+            assert_eq!(verdict.details["received"], "echoed payload");
+            let ran = std::fs::canonicalize(
+                verdict.details["interpreter"].as_str().expect("interpreter path"),
+            )
+            .unwrap();
+            assert_eq!(ran, canonical_interpreter, "{name}");
+            assert_eq!(
+                verdict.details["python3_interpreter"],
+                canonical_interpreter.display().to_string(),
+                "{name}"
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn failed_python_verifier_records_the_interpreter_it_ran() {
+        if !command_line_tools_python3_installed() {
+            return;
+        }
+        let canonical_interpreter = std::fs::canonicalize(
+            Path::new(COMMAND_LINE_TOOLS_PYTHON_DIRECTORY).join("python3"),
+        )
+        .unwrap()
+        .display()
+        .to_string();
+
+        let crashed = run_python_verifier("import sys\nsys.exit(3)\n", "/usr/bin:/bin", None)
+            .expect_err("a script that exits non-zero is a failure");
+        assert_eq!(crashed["error"], "verifier script exited unsuccessfully");
+        assert_eq!(crashed["python3_interpreter"], canonical_interpreter);
+
+        let spoofed = run_python_verifier(
+            "import json\nprint(json.dumps({'passed':False,'details':{'python3_interpreter':'/forged'}}))\n",
+            "/usr/bin:/bin",
+            None,
+        )
+        .expect("a script verdict is a verdict");
+        assert!(!spoofed.passed);
+        assert_eq!(spoofed.details["python3_interpreter"], canonical_interpreter);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_verifier_runs_when_the_python_directory_is_invalid() {
+        let package = tempfile::tempdir().unwrap();
+        std::fs::write(
+            package.path().join("verify.py"),
+            "#!/bin/sh\ncat >/dev/null\nprintf '{\"passed\":true,\"details\":{\"shell\":true}}'\n",
+        )
+        .unwrap();
+        let mut ctx = package_ctx("shell_without_python");
+        ctx.package_dir = Some(package.path().to_path_buf());
+        ctx.repository_root = package.path().to_path_buf();
+        ctx.scratch_root = package.path().join("scratch");
+        let (_, artifact) = blob(b"payload");
+        let input = test_input(artifact, serde_json::json!({}));
+        let pinned = pin_verifier_package(&ctx).unwrap();
+        assert!(!verifier_requires_python3(&pinned));
+        for invalid in ["relative/bin", "/octopus-no-such-python-directory", ""] {
+            let verdict = run_package_process_with_python(
+                &pinned,
+                &input,
+                b"payload".to_vec(),
+                Some(OsString::from("/usr/bin:/bin")),
+                Some(OsString::from(invalid)),
+            )
+            .unwrap_or_else(|details| panic!("'{invalid}': {details}"));
+            assert!(verdict.passed, "'{invalid}': {:?}", verdict.details);
+            assert_eq!(verdict.details["shell"], true);
+            assert!(verdict.details.get("python3_interpreter").is_none());
+        }
+        assert!(!package.path().join("scratch").join(PINNED_PYTHON_DIRECTORY).exists());
+    }
+
+    #[test]
+    fn python3_is_required_by_the_command_declaration_or_the_shebang() {
+        let package = |commands: &[&str], first_line: &str| {
+            let mut ctx = package_ctx("python_detection");
+            ctx.descriptor.authority.executable_commands =
+                commands.iter().map(|command| command.to_string()).collect();
+            (ctx.descriptor.clone(), first_line.as_bytes().to_vec())
+        };
+        for (commands, line, expected) in [
+            (&["/bin/sh"][..], "#!/bin/sh\n", false),
+            (&["/bin/sh"][..], "#!/bin/sh -eu\necho python3\n", false),
+            (&["/usr/bin/env", "python3"][..], "#!/usr/bin/env python3\n", true),
+            (&["/usr/bin/env"][..], "#!/usr/bin/env -S python3 -I\n", true),
+            (&["/bin/sh", "python3"][..], "#!/bin/sh\n", true),
+            (&["/usr/bin/env", "python3.12"][..], "#!/usr/bin/env python3.12\n", false),
+        ] {
+            let (descriptor, entrypoint) = package(commands, line);
+            assert_eq!(
+                names_bare_python3(&descriptor, &entrypoint),
+                expected,
+                "{commands:?} {line:?}"
+            );
+        }
+        assert_eq!(
+            shebang_commands(b"#!/usr/bin/env FOO=1 python3 -u\nbody"),
+            vec!["/usr/bin/env".to_string(), "python3".to_string()]
+        );
+        assert!(shebang_commands(b"import os\n").is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn xcode_selector_python3_is_refused_when_the_verifier_is_prepared() {
+        let package = tempfile::tempdir().unwrap();
+        let mut ctx = package_ctx("selector_shim");
+        ctx.package_dir = Some(package.path().to_path_buf());
+        ctx.repository_root = package.path().to_path_buf();
+        ctx.scratch_root = package.path().join("scratch");
+        let script = package.path().join("verify.py");
+        let cases = [
+            ("#!/usr/bin/python3\n", vec!["/usr/bin/python3"]),
+            ("#!/usr/bin/env /usr/bin/python3\n", vec!["/usr/bin/env", "/usr/bin/python3"]),
+            ("#!/usr/bin/env python3\n", vec!["/usr/bin/env", "python3", "/usr/bin/python3"]),
+        ];
+        for (first_line, commands) in cases {
+            std::fs::write(&script, format!("{first_line}print('x')\n")).unwrap();
+            ctx.descriptor.authority.executable_commands =
+                commands.iter().map(|command| command.to_string()).collect();
+            ctx.descriptor.authority.sandbox_mode = octopus_descriptors::ProcessSandboxMode::Enforced;
+            let refused = pin_verifier_package(&ctx).expect_err(first_line);
+            assert_eq!(
+                refused["error"],
+                "verifier names the Xcode selector python3, which cannot run inside the verifier sandbox",
+                "{first_line}"
+            );
+            assert_eq!(refused["named"], "/usr/bin/python3");
+            let contract = refused["required_contract"].as_str().unwrap();
+            assert!(contract.contains("#!/usr/bin/env python3"), "{contract}");
+            assert!(contract.contains(process_authority::PYTHON_DIRECTORY_VARIABLE), "{contract}");
+        }
+
+        std::fs::write(&script, "#!/usr/bin/python3\nprint('x')\n").unwrap();
+        ctx.descriptor.authority.executable_commands =
+            std::collections::BTreeSet::from(["/usr/bin/python3".to_string()]);
+        ctx.descriptor.authority.sandbox_mode = octopus_descriptors::ProcessSandboxMode::Disabled;
+        assert!(
+            pin_verifier_package(&ctx).is_ok(),
+            "an explicitly unsandboxed verifier may use the shim"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pinned_python_directory_holds_exactly_one_link_to_the_canonical_interpreter() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("Python.framework/Versions/3.14/bin");
+        write_executable(&bin.join("python3.14"), "#!/bin/sh\n");
+        std::os::unix::fs::symlink("python3.14", bin.join("python3")).unwrap();
+        write_executable(&bin.join("git"), "#!/bin/sh\n");
+        let scratch = root.path().join("scratch");
+
+        let pinned = PinnedPython::create(&scratch, Some(bin.as_os_str()))
+            .unwrap()
+            .expect("an explicit directory is always pinned");
+        let canonical = std::fs::canonicalize(bin.join("python3.14")).unwrap();
+        assert_eq!(pinned.interpreter, canonical);
+        let names: Vec<_> = std::fs::read_dir(&pinned.directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![OsString::from("python3")]);
+        assert_eq!(std::fs::read_link(pinned.directory.join("python3")).unwrap(), canonical);
+
+        let environment = verifier_environment_from(
+            Some(OsString::from("/usr/bin:/bin")),
+            Some(pinned.directory.as_path()),
+        )
+        .unwrap();
+        let entries: Vec<PathBuf> = std::env::split_paths(&environment["PATH"]).collect();
+        assert_eq!(
+            entries,
+            [pinned.directory.clone(), PathBuf::from("/usr/bin"), PathBuf::from("/bin")]
+        );
+        assert_eq!(environment.len(), 1);
+
+        let directory = pinned.directory.clone();
+        drop(pinned);
+        assert!(!directory.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verifier_environment_keeps_the_host_path_without_a_pinned_directory() {
+        assert_eq!(
+            verifier_environment_from(Some(OsString::from("/usr/bin:/bin")), None).unwrap()["PATH"],
+            OsString::from("/usr/bin:/bin")
+        );
+        for absent in [None, Some(OsString::new())] {
+            assert_eq!(
+                verifier_environment_from(absent, Some(Path::new("/pinned"))),
+                Err("host PATH is absent".to_string())
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn deliberate_interpreter_choice_is_honored_only_when_readable() {
+        let root = tempfile::tempdir().unwrap();
+        let uv_style = uv_style_python_directory(root.path());
+        let refused = run_python_verifier(ECHO_INTERPRETER_BODY, "/usr/bin:/bin", Some(&uv_style))
+            .expect_err("an interpreter outside the readable paths must not run");
+        assert_eq!(refused["error"], "verifier process environment is unavailable");
+        assert!(
+            refused["source"].as_str().unwrap().contains(UNREADABLE_PREFIX_ERROR),
+            "unexpected refusal: {refused}"
+        );
+        let empty = run_python_verifier(ECHO_INTERPRETER_BODY, "/usr/bin:/bin", Some(Path::new("")))
+            .expect_err("an empty directory setting is an error");
+        assert!(empty["source"].as_str().unwrap().contains("is set but empty"), "{empty}");
+
+        if !Path::new(FRAMEWORK_PYTHON_DIRECTORY).join("python3").exists() {
+            eprintln!("skipped: the python.org framework Python is not installed");
+            return;
+        }
+        let verdict = run_python_verifier(
+            ECHO_INTERPRETER_BODY,
+            "/usr/bin:/bin",
+            Some(Path::new(FRAMEWORK_PYTHON_DIRECTORY)),
+        )
+        .unwrap_or_else(|details| panic!("verifier did not run: {details}"));
+        assert!(verdict.passed, "{:?}", verdict.details);
+        let ran = std::fs::canonicalize(
+            verdict.details["interpreter"].as_str().expect("interpreter path"),
+        )
+        .unwrap();
+        assert!(ran.starts_with("/Library/Frameworks"), "ran {}", ran.display());
+        assert_eq!(verdict.details["python3_interpreter"], ran.display().to_string());
     }
 
     #[cfg(unix)]

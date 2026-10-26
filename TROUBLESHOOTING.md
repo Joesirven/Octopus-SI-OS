@@ -144,6 +144,35 @@ Octopus runs `python3` and `git` from the Command Line Tools for Xcode. On a Mac
 without them, macOS offers to install the tools instead of running the
 command. Install them with `xcode-select --install` and retry.
 
+A verifier that uses `python3` (it declares `python3` in `executable_commands`
+or starts with `#!/usr/bin/env python3`) gets one pinned `python3`, ahead of
+whatever your shell puts first on `PATH`. The default is the one in
+`/Library/Developer/CommandLineTools/usr/bin`. Only `python3` is redirected;
+every other command is found on `PATH` as before, and a verifier that does not
+use `python3` is not affected. A uv or pyenv Python is not used, because the
+verifier sandbox can read the standard library only of a Command Line Tools or
+python.org framework Python. To use a different Python, set
+`OCTOPUS_VERIFIER_PYTHON_DIR` to an absolute directory that holds its
+`python3`, for example the `bin` directory of a python.org install under
+`/Library/Frameworks/Python.framework/Versions/Current`. The variable must be in
+the environment of the process that starts Octopus, so an app opened from the
+Finder does not see a shell export. Octopus does not fall back to another
+Python: a directory that cannot work stops the verifier before it runs, with
+this message:
+
+```text
+python3 interpreter '<path>' from <source> keeps its standard library outside the paths the verifier sandbox can read; use the Command Line Tools python3 or a python.org framework Python, or set OCTOPUS_VERIFIER_PYTHON_DIR to a directory that holds one
+```
+
+A verdict from such a verifier records the canonical interpreter that ran in
+`details.python3_interpreter`.
+
+`/usr/bin/python3` is the Xcode selector shim and does not run inside the
+verifier sandbox. A verifier whose first line or `executable_commands` names it
+is refused when it is prepared, unless its sandbox mode is `disabled`. Use
+`#!/usr/bin/env python3` with `executable_commands` of `/usr/bin/env` and
+`python3` instead.
+
 ## The build fails
 
 - **`Packaging native PiP requires explicit OCTOPUS_NATIVE_NODE_HEADERS`**  - 

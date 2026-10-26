@@ -66,7 +66,7 @@ release.
 
 - macOS 14 or later, with the checkout on an APFS volume.
 - Xcode Command Line Tools (`xcode-select --install`), including Clang, Swift,
-  the macOS SDK, and `/usr/bin/python3`.
+  the macOS SDK, and `python3`.
 - [Node.js 24 LTS](https://nodejs.org/en/download) and npm. Node 20 does not
   support the required native rebuild and SQLite checks.
 - Current stable [Rust](https://www.rust-lang.org/tools/install) and Cargo.
