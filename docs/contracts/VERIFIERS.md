@@ -189,6 +189,12 @@ awaited artifact.
 Nothing coordinates on failures. Runs wait only on admitted ticks; a
 `VerificationFailed` row is diagnostic evidence, not a wait key.
 
+The `InterfaceArrival` written for a rejected artifact carries
+`verification_failure` and is finished evidence. Replay on restart never treats
+it as pending, so the sender may retry any number of times and the ledger still
+reloads. A rejected arrival that claims `replaces_arrival_seq` is malformed and
+fails the reload.
+
 No module routes marks. Delivery across environments *is* the artifact-transfer
 protocol.
 

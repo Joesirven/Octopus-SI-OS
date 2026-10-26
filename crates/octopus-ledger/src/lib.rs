@@ -1068,8 +1068,16 @@ impl InterfaceArrivalMarkProofIndex {
         let mut pending: HashMap<InterfaceArrivalMarkProofKey, &Movement> = HashMap::new();
         let mut index = Self::default();
         for movement in movements {
-            let replacement = movement.invocation_metadata.as_ref()
-                .and_then(MovementMetadata::invocation).and_then(|metadata| metadata.replaces_arrival_seq);
+            let invocation = movement.invocation_metadata.as_ref().and_then(MovementMetadata::invocation);
+            let replacement = invocation.and_then(|metadata| metadata.replaces_arrival_seq);
+            if movement.kind == MovementKind::InterfaceArrival
+                && invocation.is_some_and(|metadata| metadata.verification_failure.is_some())
+            {
+                if replacement.is_some() {
+                    return Err(LedgerError::InvalidInterfaceArrivalReplacement { sequence: movement.seq });
+                }
+                continue;
+            }
             if let Some(key) = interface_arrival_mark_proof_key(movement) {
                 if replacement.is_some() && !pending.get(&key)
                     .is_some_and(|prior| replaces_pending_interface_arrival(prior, movement))
@@ -1594,5 +1602,199 @@ mod tests {
 
         drop(live);
         tail.wait_for(Cursor(Seq(99))).await;
+    }
+
+    fn replay_artifact() -> ArtifactRef {
+        ArtifactRef {
+            id: ArtifactId::new("result:replay"),
+            content: ContentHash::of_bytes(b"replay result"),
+        }
+    }
+
+    fn replay_metadata(run_record: &[u8]) -> InvocationMetadata {
+        InvocationMetadata::new(GrantProjection::default())
+            .with_runtime(RuntimeInvocationMetadata {
+                run: RunId::new("run-replay"),
+                ee: EeId::new("ee-replay"),
+                worker: InterfaceId::new("worker-replay"),
+                checkpoint: CheckpointId::new("checkpoint-replay"),
+                interface: InterfaceId::new("source-replay"),
+                epoch: 0,
+                run_record_hash: Some(ContentHash::of_bytes(run_record).to_hex()),
+            })
+            .with_required_verified_artifacts(vec![RequiredVerifiedArtifact {
+                mark: MarkId::new("mark-replay"),
+                artifact_label: "result".to_string(),
+                verifier: VerifierId::new("verifier-replay"),
+                params: serde_json::Value::Null,
+            }])
+            .with_checkpoint_admission(CheckpointAdmissionMetadata {
+                artifact_label: "result".to_string(),
+                required_artifact_labels: vec!["result".to_string()],
+                complete: true,
+            })
+    }
+
+    fn failed_replay_metadata() -> InvocationMetadata {
+        replay_metadata(b"run record").with_verification_failure(VerificationFailureMetadata {
+            error: "verifier could not run".to_string(),
+            verifier: None,
+            mark: None,
+            artifact_label: None,
+            run: None,
+            checkpoint: None,
+            verifier_package: None,
+            details: None,
+        })
+    }
+
+    fn append_replay_arrival(log: &mut InMemoryLog, metadata: InvocationMetadata) -> Movement {
+        log.append(MovementDraft {
+            trace: TraceId("trace-replay".to_string()),
+            kind: MovementKind::InterfaceArrival,
+            from: Endpoint::Interface(InterfaceId::new("source-replay")),
+            to: Endpoint::Interface(InterfaceId::new("worker-replay")),
+            artifact: Some(replay_artifact()),
+            invocation_metadata: Some(metadata.into()),
+            causal_floor: None,
+        })
+    }
+
+    fn append_replay_failed_pair(log: &mut InMemoryLog) -> Movement {
+        let arrival = append_replay_arrival(log, failed_replay_metadata());
+        log.append(MovementDraft {
+            trace: arrival.trace.clone(),
+            kind: MovementKind::VerificationFailed,
+            from: arrival.from.clone(),
+            to: arrival.to.clone(),
+            artifact: arrival.artifact.clone(),
+            invocation_metadata: None,
+            causal_floor: Some(arrival.lamport),
+        });
+        arrival
+    }
+
+    fn append_replay_mark(
+        log: &mut InMemoryLog,
+        arrival: &Movement,
+        arrival_seq: Option<u64>,
+    ) -> Movement {
+        let mut mark = Mark::passed(
+            MarkId::new("mark-replay"),
+            CheckpointId::new("checkpoint-replay"),
+            RunId::new("run-replay"),
+            0,
+            replay_artifact(),
+            VerifierId::new("verifier-replay"),
+            VerifierPackagePin {
+                descriptor_content: ContentHash::of_bytes(b"descriptor"),
+                script_content: ContentHash::of_bytes(b"script"),
+            },
+            serde_json::json!({"passed": true}),
+        );
+        mark.arrival_seq = arrival_seq;
+        log.append(MovementDraft {
+            trace: arrival.trace.clone(),
+            kind: MovementKind::MarkOutcomeAdmitted(mark.name.clone()),
+            from: arrival.from.clone(),
+            to: arrival.to.clone(),
+            artifact: Some(replay_artifact()),
+            invocation_metadata: Some(mark.into()),
+            causal_floor: Some(arrival.lamport),
+        })
+    }
+
+    #[test]
+    fn repeated_failed_arrivals_then_a_good_arrival_and_mark_reload() {
+        for failed_pairs in [2, 30] {
+            let mut log = InMemoryLog::new();
+            let failed: Vec<Movement> = (0..failed_pairs)
+                .map(|_| append_replay_failed_pair(&mut log))
+                .collect();
+            let good = append_replay_arrival(&mut log, replay_metadata(b"run record"));
+            append_replay_mark(&mut log, &good, None);
+
+            let index = InterfaceArrivalMarkProofIndex::from_movements(&log.read_from(Seq(0)))
+                .expect("failed arrivals are finished evidence, not pending proofs");
+            assert!(failed.iter().all(|arrival| index.proof_lamport(arrival).is_none()));
+            assert!(index.proof_lamport(&good).is_some());
+        }
+    }
+
+    #[test]
+    fn a_mark_cannot_prove_an_arrival_that_already_failed_verification() {
+        let mut log = InMemoryLog::new();
+        let first = append_replay_failed_pair(&mut log);
+        let second = append_replay_failed_pair(&mut log);
+        append_replay_mark(&mut log, &second, None);
+
+        let index = InterfaceArrivalMarkProofIndex::from_movements(&log.read_from(Seq(0)))
+            .expect("failed arrivals never become pending");
+        assert!(index.proof_lamport(&first).is_none());
+        assert!(index.proof_lamport(&second).is_none());
+    }
+
+    #[test]
+    fn two_live_pending_arrivals_with_one_key_still_error() {
+        let mut log = InMemoryLog::new();
+        let first = append_replay_arrival(&mut log, replay_metadata(b"first run record"));
+        let second = append_replay_arrival(&mut log, replay_metadata(b"second run record"));
+        append_replay_mark(&mut log, &second, None);
+
+        let error = InterfaceArrivalMarkProofIndex::from_movements(&log.read_from(Seq(0)))
+            .err()
+            .expect("one mark cannot prove two pending arrivals");
+        assert!(matches!(
+            error,
+            LedgerError::AmbiguousInterfaceArrivalMarkProof { first: a, second: b }
+                if a == first.seq && b == second.seq
+        ));
+    }
+
+    #[test]
+    fn a_failed_arrival_that_claims_a_replacement_is_rejected() {
+        let mut log = InMemoryLog::new();
+        let pending = append_replay_arrival(&mut log, replay_metadata(b"run record"));
+        let mut claiming = failed_replay_metadata();
+        claiming.replaces_arrival_seq = Some(pending.seq.0);
+        let claimed = append_replay_arrival(&mut log, claiming);
+
+        let error = InterfaceArrivalMarkProofIndex::from_movements(&log.read_from(Seq(0)))
+            .err()
+            .expect("a failed arrival cannot replace anything");
+        assert!(matches!(
+            error,
+            LedgerError::InvalidInterfaceArrivalReplacement { sequence } if sequence == claimed.seq
+        ));
+    }
+
+    #[test]
+    fn a_failed_arrival_between_a_pending_arrival_and_its_replacement_changes_nothing() {
+        let mut log = InMemoryLog::new();
+        let pending = append_replay_arrival(&mut log, replay_metadata(b"run record"));
+        let failed = append_replay_failed_pair(&mut log);
+        let mut replacing = replay_metadata(b"run record");
+        replacing.replaces_arrival_seq = Some(pending.seq.0);
+        let replacement = append_replay_arrival(&mut log, replacing);
+        append_replay_mark(&mut log, &replacement, Some(replacement.seq.0));
+
+        let index = InterfaceArrivalMarkProofIndex::from_movements(&log.read_from(Seq(0)))
+            .expect("the replacement chain survives an intervening failed arrival");
+        assert!(index.proof_lamport(&pending).is_none());
+        assert!(index.proof_lamport(&failed).is_none());
+        assert!(index.proof_lamport(&replacement).is_some());
+    }
+
+    #[test]
+    fn a_failed_arrival_after_a_pending_arrival_leaves_the_mark_to_the_pending_one() {
+        let mut log = InMemoryLog::new();
+        let pending = append_replay_arrival(&mut log, replay_metadata(b"run record"));
+        let failed = append_replay_failed_pair(&mut log);
+        append_replay_mark(&mut log, &pending, None);
+
+        let index = InterfaceArrivalMarkProofIndex::from_movements(&log.read_from(Seq(0)))
+            .expect("a failed arrival never competes with a pending one");
+        assert!(index.proof_lamport(&pending).is_some());
+        assert!(index.proof_lamport(&failed).is_none());
     }
 }

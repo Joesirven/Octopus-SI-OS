@@ -1966,4 +1966,73 @@ mod tests {
             .expect_err("one mark cannot prove two pending arrival snapshots");
         assert!(error.to_string().contains("exact mark proof is ambiguous"));
     }
+
+    #[test]
+    fn replay_reloads_repeated_verifier_rejected_arrivals_without_recovering_anything() {
+        let artifact = ArtifactRef {
+            id: ArtifactId::new("result:rejected"),
+            content: ContentHash::of_bytes(b"rejected result"),
+        };
+        let arriving_interface = InterfaceId::new("world_source");
+        let worker = InterfaceId::new("system_worker_rejected");
+        let metadata = InvocationMetadata::new(GrantProjection::default())
+            .with_runtime(RuntimeInvocationMetadata {
+                run: RunId::new("run_rejected"),
+                ee: EeId::new("ee_rejected"),
+                worker: worker.clone(),
+                checkpoint: octopus_descriptors::CheckpointId::new("checkpoint_rejected"),
+                interface: arriving_interface.clone(),
+                epoch: 0,
+                run_record_hash: Some(ContentHash::of_bytes(b"run record").to_hex()),
+            })
+            .with_outbound_interface_bindings(vec![InterfaceId::new("world_target")])
+            .with_required_verified_artifacts(vec![RequiredVerifiedArtifact {
+                mark: MarkId::new("result.ok"),
+                artifact_label: "result".to_string(),
+                verifier: VerifierId::new("result_verifier"),
+                params: serde_json::json!({}),
+            }])
+            .with_checkpoint_admission(CheckpointAdmissionMetadata {
+                artifact_label: "result".to_string(),
+                required_artifact_labels: vec!["result".to_string()],
+                complete: true,
+            })
+            .with_verification_failure(octopus_ledger::VerificationFailureMetadata {
+                error: "verifier could not run".to_string(),
+                verifier: None,
+                mark: None,
+                artifact_label: None,
+                run: None,
+                checkpoint: None,
+                verifier_package: None,
+                details: None,
+            });
+        let mut log = InMemoryLog::new();
+        for _ in 0..3 {
+            let arrival = log.append(MovementDraft {
+                trace: TraceId("trace-rejected".to_string()),
+                kind: MovementKind::InterfaceArrival,
+                from: Endpoint::Interface(arriving_interface.clone()),
+                to: Endpoint::Interface(worker.clone()),
+                artifact: Some(artifact.clone()),
+                invocation_metadata: Some(metadata.clone().into()),
+                causal_floor: None,
+            });
+            log.append(MovementDraft {
+                trace: arrival.trace.clone(),
+                kind: MovementKind::VerificationFailed,
+                from: arrival.from.clone(),
+                to: arrival.to.clone(),
+                artifact: Some(artifact.clone()),
+                invocation_metadata: None,
+                causal_floor: Some(arrival.lamport),
+            });
+        }
+
+        let rows = log.read_from(Seq(0));
+        let recovered = recover_durable_checkpoint_outbound_tail(&mut log, &rows)
+            .expect("rejected arrivals are finished evidence and must not block a restart");
+        assert!(recovered.is_empty());
+        assert_eq!(log.len(), 6);
+    }
 }
