@@ -5,9 +5,9 @@
 - Octopus marks come from a source search of the Octopus client, kernel, registry, and documents.
 - Octopus mark meanings: ✓ means found. Partial means part of the feature exists. Blank means not found in the search. Blank does not prove that the feature is absent.
 - Priority meanings: High means reliability, recovery, or a core daily step that Octopus needs now. Medium means a large productivity or reach gain. Low means a small gain, or Octopus already has the feature.
-- Totals: 108 features. Octopus has 33, has 32 in part, and lacks 42. 1 is not applicable. Priority: 9 High, 37 Medium, 62 Low.
+- Totals: 107 features. Octopus has 33, has 32 in part, and lacks 41. 1 is not applicable. Priority: 9 High, 37 Medium, 61 Low.
 
-| Feature | Description | BB | Octopus | Priority | Why Octopus might need it |
+| Feature | Description | BB | <img src="../assets/octopus-icon.png" width="20" alt="Octopus"> Octopus | Priority | Why Octopus might need it |
 |---|---|---|---|---|---|
 | **Threads and conversation** | | | | | |
 | Steer a running turn | Send a message into the reply that is running to correct the agent mid-turn. | ✓ | ✓ | Low | Octopus already makes steer the default Send action. Keep it reliable across restarts, as BB does. |
@@ -53,7 +53,6 @@
 | Desktop notifications | Notify the user when a turn ends or needs input. | ✓ | ✓ | Low | Octopus has notifications with sound and event settings. No work is needed. |
 | Notification modes per thread | Choose to be notified, muted, or alerted for each thread. | ✓ | Partial | Low | Octopus notification settings are global. Per-thread modes stop noise from busy background tasks. |
 | Dock badge | Show the count of threads that need attention on the app icon. | ✓ |  | Low | The user sees pending work without opening the app. |
-| Menu bar items | Plugins add items to the system menu bar. | ✓ |  | Low | Quick status and actions stay visible while the main window is closed. |
 | Keep Awake | Stop the computer from sleeping while agents work. | ✓ | ✓ | Low | Octopus has a power save blocker. No work is needed. |
 | Voice transcription | Dictate messages and transcribe audio files. | ✓ | ✓ | Low | Octopus has dictation with retained recordings. No work is needed. |
 | **Code review and git** | | | | | |
@@ -132,12 +131,12 @@
 
 ## Analysis
 
-- Octopus has 33 of the 108 BB features, has 32 in part, and lacks 42. Most of what it has is in the conversation and the workspace. Most of what it lacks is in reach (remote, mobile, other platforms), upkeep, and the plugin ecosystem.
+- Octopus has 33 of the 107 BB features, has 32 in part, and lacks 41. Most of what it has is in the conversation and the workspace. Most of what it lacks is in reach (remote, mobile, other platforms), upkeep, and the plugin ecosystem.
 - Suggested order for the High items: first the reliability work (automatic retries, the stuck turn timeout, and out-of-memory protection).
 - Next, persisted format migration. Do this before in-app updates, because an updater is not safe while each new version can break stored data.
 - Then the daily-use gaps: the diff review pane, compact conversation, a second solid provider, and plugin safe mode.
 - Octopus is ahead of BB in restart recovery, the movement ledger, verifiers, and the deny-by-default sandbox. A contribution must not weaken these.
-- Every BB check mark was confirmed in the BB changelog or the BB source. Octopus marks come from a source search, so confirm a blank mark in the running app before you start work on it.
+- Every BB check mark was confirmed in the public BB changelog or the upstream BB README and docs. Octopus marks come from a source search, so confirm a blank mark in the running app before you start work on it.
 
 ## Features only Octopus has
 
