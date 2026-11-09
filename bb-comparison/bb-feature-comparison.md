@@ -2,11 +2,11 @@
 
 - BB is version 0.49.0 (changelog dated 2026-11-06). Octopus is commit d372510f on main (2026-11-08).
 - BB features come from the BB changelog since 0.0.29 and the BB documents. Every row is a BB feature, so every BB cell has a check mark.
-- Octopus marks come from a source search of the Octopus client, kernel, registry, and documents. The explanation names the Octopus file for each ✓ and Partial mark, and what was searched for many blank marks.
+- Octopus marks come from a source search of the Octopus client, kernel, registry, and documents. The explanation names the Octopus file for most ✓ and Partial marks, and what was searched for many blank marks.
 - Octopus mark meanings: ✓ means found. Partial means part of the feature exists. Blank means not found in the search. Blank does not prove that the feature is absent.
 - Priority meanings: High means reliability, recovery, or a core daily step that Octopus needs now. Medium means a large productivity or reach gain. Low means a small gain, or Octopus already has the feature.
 - Order: rows are sorted by priority. Inside each priority, missing features come first, then partial features, then features Octopus already has.
-- Totals: 136 features. Octopus has 37, has 40 in part, and lacks 58. 1 is not applicable. Priority: 8 High, 44 Medium, 84 Low.
+- Totals: 135 features. Octopus has 36, has 40 in part, and lacks 58. 1 is not applicable. Priority: 8 High, 44 Medium, 83 Low.
 
 | Feature | Area | Description | BB | <img src="../assets/octopus-icon.png" width="20" alt="Octopus"> Octopus | Priority | Why Octopus might need it |
 |---|---|---|---|---|---|---|
@@ -18,7 +18,7 @@
 | Diff review pane | Code review and git | Review changes file by file, mark files as viewed, ignore whitespace, and filter files. | ✓ | Partial | High | Octopus has a changes pane with branch review (`app/src/components/worker-environment/ChangesWorkspace.tsx`). Viewed marks and filters make large reviews practical, and review speed decides how much agent work a user can accept. |
 | Several agent providers | Providers and accounts | Run Codex, Claude Code, Pi, Cursor, OpenCode, and others side by side. | ✓ | Partial | High | Octopus lists about 35 provider descriptors, but `docs/architecture.md:626` says the preview is "one provider deep". A second solid provider removes the single-vendor risk and tests the interface design. |
 | Automatic retries | Providers and accounts | Retry a turn after a temporary provider error or a usage limit, with backoff. | ✓ | Partial | High | Octopus shows the provider's own reconnect attempts (`RetryableErrorActivity` in `TurnActivity.tsx:949`) and a manual Retry for a failed queued message (`QueuedMessageList.tsx:140`). No automatic retry after a usage limit was found, so an unattended run stops until the user returns. |
-| Stuck turn timeout | Providers and accounts | Detect a turn that the provider accepts but never starts, and end it cleanly. | ✓ | Partial | High | Octopus restarts failed interface processes with backoff (`crates/octopus-interface-transport/src/lib.rs:1594`). No turn-level timeout was found. A silent stuck turn is the worst failure for an unattended agent. |
+| Stuck turn timeout | Providers and accounts | Detect a turn that the provider accepts but never starts, and end it cleanly. | ✓ | Partial | High | Octopus restarts failed interface processes with backoff (`crates/octopus-app/src/main.rs:651`). No turn-level timeout was found. A silent stuck turn is the worst failure for an unattended agent. |
 | **Medium priority** | | | | | | |
 | Fork a thread | Threads and conversation | Copy a conversation into a new thread to try another approach. | ✓ |  | Medium | Searched for fork actions in the client and the command list (`app/src/clientActions.ts`). A user can explore two approaches and keep the better one. Octopus checkpoints already give a natural fork point. |
 | Parent notifications | Threads and conversation | A child thread reports its final answer to its parent automatically. | ✓ |  | Medium | Without it, a parent must poll its children. Automatic reports make delegated work finish without the user relaying results. |
@@ -28,7 +28,7 @@
 | Agent annotations | Code review and git | Agents leave comments on lines of a diff for the user to review. | ✓ |  | Medium | The agent can explain a risky change exactly where it is. Reviews become faster and more precise. |
 | Network server | Machines, server, and remote use | One server process that clients and machines reach over the network. | ✓ |  | Medium | The Octopus runtime listens only on a Unix socket under ~/.octopus (`crates/octopus-app/src/runtime_control.rs:67-80`). Every remote feature below depends on a network server with a login. |
 | Authenticated remote access | Machines, server, and remote use | Reach the app from anywhere through an authenticated address. | ✓ |  | Medium | The Octopus tunnel code serves Slack and GitHub webhooks only. The user could check and steer work away from the desk. |
-| Web client | Machines, server, and remote use | Use the app in a web browser. | ✓ |  | Medium | The Electron bridge accepts `unix://` and `ws://` only and rejects wss (`parseEndpoint` in `app/electron/main.cjs:5317-5348`). A browser client works on any computer and is the base for remote access. |
+| Web client | Machines, server, and remote use | Use the app in a web browser. | ✓ |  | Medium | The Electron bridge accepts `unix://` and `ws://` only and rejects `wss://` (`parseEndpoint` in `app/electron/main.cjs:5317-5348`). A browser client works on any computer and is the base for remote access. |
 | Mobile app | Machines, server, and remote use | Use the same threads from an iOS or Android app. | ✓ |  | Medium | Answers to agent questions would not wait until the user is back at the Mac. The Octopus phone matches are only viewport presets for site tests. |
 | Push notifications | Machines, server, and remote use | Send phone, web, and desktop notifications when a thread needs the user. | ✓ |  | Medium | A paused run would wait for minutes instead of hours. This depends on a mobile or web client. |
 | Machine enrollment | Machines, server, and remote use | Add a computer with one install command and list all machines in Settings. | ✓ |  | Medium | Searched the client and docs for a machine list and enrollment. Octopus has no screen to add, list, or check machines. |
@@ -113,12 +113,12 @@
 | Terminal command runner | Command-line tool and API | Run a command in a thread's terminal from the command-line tool. | ✓ | Partial | Low | Agents can start and watch long commands in a shared, visible terminal. |
 | Steer a running turn | Threads and conversation | Send a message into the reply that is running to correct the agent mid-turn. | ✓ | ✓ | Low | Octopus makes steer the default Send action (`submitChatSteer` in `app/src/projectionClient.ts`). No work is needed. |
 | Queue follow-up messages | Threads and conversation | Hold messages until the current turn ends, then send them in order. | ✓ | ✓ | Low | Octopus has a queued message list with edit, delete, and Steer (`app/src/components/chat/clientTurnQueue.ts`, `QueuedMessageList.tsx`). No work is needed. |
-| Automatic thread titles | Threads and conversation | Generate a short title from the first message, with a regenerate action. | ✓ | ✓ | Low | Octopus generates titles (`app/src/components/chat/useTaskTitle.ts`) and supports rename. A regenerate action is the only gap. |
+| Automatic thread titles | Threads and conversation | Generate a short title from the first message. | ✓ | ✓ | Low | Octopus generates titles (`app/src/components/chat/useTaskTitle.ts`) and supports rename. BB also has a regenerate action, which Octopus can add later. |
 | Rename and pin threads | Threads and conversation | Rename threads and pin them to the top of the list. | ✓ | ✓ | Low | Octopus has rename, pinning (`toggle_pin_task` in `app/src/clientActions.ts`), and manual sort. No work is needed. |
-| Thread search | Threads and conversation | Search thread titles and contents, with filters. | ✓ | ✓ | Low | The Octopus command menu searches message text and shows snippets (`app/src/components/CommandMenu.tsx:284`). Filters are the only gap. |
+| Thread search | Threads and conversation | Search thread titles and contents. | ✓ | ✓ | Low | The Octopus command menu searches message text and shows snippets (`app/src/components/CommandMenu.tsx:284`). BB also has search filters, which Octopus can add later. |
 | Read and unread state | Threads and conversation | Mark threads that have new activity as unread. | ✓ | ✓ | Low | Octopus computes unread state (`clientTaskUnread` in `app/src/shell/clientWorkspaces.ts:463`) and shows it in the navigation rail. No work is needed. |
 | Message times | Threads and conversation | Show the time of each message. | ✓ | ✓ | Low | Octopus shows message times (`formatMessageTime` in `app/src/components/chat/ChatMessageList.tsx:3764`). No work is needed. |
-| Agent questions | Threads and conversation | The agent asks the user a question with choices and waits for the answer. | ✓ | ✓ | Low | Octopus has operator input requests. No work is needed. |
+| Agent questions | Threads and conversation | The agent asks the user a question with choices and waits for the answer. | ✓ | ✓ | Low | Octopus answers elicitation and user input requests in the chat (`operatorRequestResponseKind` in `app/src/components/chat/useChatWorkspace.ts:3287`). No work is needed. |
 | Tool approvals | Threads and conversation | The user approves or denies a tool call before it runs. | ✓ | ✓ | Low | Octopus shows approvals in the turn activity (`TurnActivity.tsx`) and asks for policy grants. No work is needed. |
 | Attachments and images | Threads and conversation | Attach files and images to a message and preview them. | ✓ | ✓ | Low | Octopus has attachments, previews, and a lightbox (`app/electron/clientAttachments.cjs`). No work is needed. |
 | File mentions | Threads and conversation | Refer to a project file with @ in the composer. | ✓ | ✓ | Low | Octopus adds file mentions in the composer (`app/src/components/chat/ChatComposer.tsx`). No work is needed. |
@@ -135,7 +135,6 @@
 | Keep Awake | Workspace and navigation | Stop the computer from sleeping while agents work. | ✓ | ✓ | Low | Octopus has a power save blocker (`app/electron/preload.cjs`). No work is needed. |
 | Voice transcription | Workspace and navigation | Dictate messages and transcribe audio files. | ✓ | ✓ | Low | Octopus has dictation with retained recordings (`app/src/components/chat/DictationRecordings.tsx`). No work is needed. |
 | Worktree for each thread | Code review and git | Run each thread in its own git worktree. | ✓ | ✓ | Low | Octopus has a git worktree environment kind (`registry/worker_environment_kind/git_worktree`). No work is needed. |
-| Agent review task | Code review and git | Ask another agent to review a thread's work. | ✓ | ✓ | Low | Octopus has a review task (`startReviewTask`, `reviewTask.ts`) and a reviewer worker policy. No work is needed. |
 | Local-only by default | Machines, server, and remote use | The server is not reachable from the network unless the user sets it up. | ✓ | ✓ | Low | A Unix socket can only be reached by local users with file access. If Octopus adds a network server, keep this default and add a login, as BB did with its loopback bind. |
 | Reconnect catch-up | Machines, server, and remote use | After a dropped connection, the client replays the events it missed. | ✓ | ✓ | Low | Octopus interfaces read with cursors from the ledger. No work is needed. |
 | Provider usage display | Providers and accounts | Show remaining limits, credits, and reset times. | ✓ | ✓ | Low | Octopus shows usage limits and reset times (`app/src/components/ProviderUsage.tsx`). No work is needed. |
@@ -152,7 +151,7 @@
 
 ## Analysis
 
-- Octopus has 37 of the 136 BB features, has 40 in part, and lacks 58. Most of what it has is in the conversation and the workspace. Most of what it lacks is in reach (server, machines, web, mobile, other platforms), upkeep, and the plugin ecosystem.
+- Octopus has 36 of the 135 BB features, has 40 in part, and lacks 58. Most of what it has is in the conversation and the workspace. Most of what it lacks is in reach (server, machines, web, mobile, other platforms), upkeep, and the plugin ecosystem.
 - Server and machines: Octopus has a local runtime process on a Unix socket, not a network server. Its only multi-machine feature is remote command execution, which a user sets up by hand with a JSON file and a secret. The agent and its history always stay on one Mac.
 - Suggested order for the High items: first the reliability work (automatic retries after a usage limit, the stuck turn timeout, and out-of-memory protection).
 - Next, persisted format migration. Do this before in-app updates, because an updater is not safe while each new version can break stored data.
@@ -169,7 +168,8 @@
 | Verifiers and marks | Verifiers check artifacts, and marks record the result. | BB could gate task completion on a machine check, not on agent claims. |
 | Deny-by-default sandbox | Runs execute under a macOS sandbox profile with explicit grants. | BB could tighten local execution beyond approval prompts. |
 | Self-review with change journal | A trigger reviews the system, records each change in a journal, and supports undo. | BB could let agents improve conventions with a safe undo. |
-| Home edits the client source | The Home conversation edits the client's own source, not only extensions. | BB plugins cannot change the core app. |
+| Home edits the client source | The Home conversation edits the client's own source, not only extensions. | Not found in the BB changelog. |
+| Agent review task | Start a review of one task's work by another agent (`reviewTask.ts`). | BB has diff review for people. No built-in agent review step was found in the BB changelog. |
 | Message triggers | Incoming email, Telegram, or Slack messages start work. | No message-based trigger was found in BB automations. |
 | Setup files | Export and import a whole setup as one file. | BB could make a new machine match an old one in one step. |
 | Voice calls | Talk with Home in a live voice call. | No voice call feature was found in BB. BB has voice recording and transcription. |
