@@ -15,12 +15,12 @@
   },
   "supported_worker_environment_kinds": ["system_room"],
   "handler_config": { "operation": "memory_list" },
-  "description": "List remembered notes visible to this run in id order, notes saved earlier first, with their usage. Continue with next_cursor. include_withdrawn also shows notes that were superseded, for maintenance work.",
+  "description": "List remembered notes visible to this run in id order, notes saved earlier first, with their usage. limit is an integer from 1 to 50 (default 20). For more notes, pass the returned next_cursor as cursor until next_cursor is null; do not increase limit beyond 50. include_withdrawn also shows notes that were superseded, for maintenance work.",
   "args_schema": {
     "type": "object",
     "properties": {
-      "cursor": { "type": "string", "minLength": 1, "maxLength": 128 },
-      "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
+      "cursor": { "type": "string", "minLength": 1, "maxLength": 128, "description": "Pass next_cursor from the preceding page unchanged; omit for the first page." },
+      "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "Notes per page: integer from 1 to 50; defaults to 20." },
       "include_withdrawn": { "type": "boolean" }
     },
     "required": [],

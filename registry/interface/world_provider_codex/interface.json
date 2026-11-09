@@ -3036,7 +3036,9 @@
         "operator.user_input.request",
         "turn.agent_message",
         "turn.reasoning",
-        "turn.plan.update"
+        "turn.plan.update",
+        "hook.catalog",
+        "hook.catalog.error"
       ],
       "client_projection_output_labels": [
         "turn.input.acknowledged",
