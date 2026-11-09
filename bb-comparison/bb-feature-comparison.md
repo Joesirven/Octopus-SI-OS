@@ -5,7 +5,7 @@
 - Octopus marks come from a source search of the Octopus client, kernel, registry, and documents.
 - Octopus mark meanings: ✓ means found. Partial means part of the feature exists. Blank means not found in the search. Blank does not prove that the feature is absent.
 - Priority meanings: High means reliability, recovery, or a core daily step that Octopus needs now. Medium means a large productivity or reach gain. Low means a small gain, or Octopus already has the feature.
-- Totals: 108 features. Octopus has 34, has 32 in part, and lacks 41. 1 is not applicable. Priority: 9 High, 37 Medium, 62 Low.
+- Totals: 108 features. Octopus has 33, has 32 in part, and lacks 42. 1 is not applicable. Priority: 9 High, 37 Medium, 62 Low.
 
 | Feature | Description | BB | Octopus | Priority | Why Octopus might need it |
 |---|---|---|---|---|---|
@@ -23,7 +23,8 @@
 | Thread handoff | Move a thread to another provider or machine and continue the work. | ✓ |  | Medium | The Octopus handoff code moves file sources, not conversations. Thread handoff lets a user continue when one provider reaches its limit. |
 | Side chat | Ask a quick question beside a thread without changing the main conversation. | ✓ |  | Low | A user can check a fact without adding noise to the main task context. |
 | Automatic thread titles | Generate a short title from the first message, with a regenerate action. | ✓ | ✓ | Low | Octopus generates titles and supports rename. A regenerate action is the only gap. |
-| Rename, pin, and sort | Rename threads, pin them, and order them by hand. | ✓ | ✓ | Low | Octopus has rename, pinning, and manual sort. No work is needed. |
+| Rename and pin threads | Rename threads and pin them to the top of the list. | ✓ | ✓ | Low | Octopus has rename, pinning, and manual sort. No work is needed. |
+| Nest threads by drag | Drag a thread onto another thread to make it a child. | ✓ |  | Low | Users can group related work by hand. Octopus fixes the hierarchy as Project, Agent, and task. |
 | Archive with undo | Archive a thread and undo the action from a notice. | ✓ | Partial | Low | Octopus has archive and restore. An undo notice prevents an accidental archive from becoming a search task. |
 | Thread search | Search thread titles and contents. | ✓ | ✓ | Low | Octopus has search in the command menu and the terminal client. No work is needed. |
 | Read and unread state | Mark threads that have new activity as unread. | ✓ | ✓ | Low | Octopus shows unread state in the navigation rail. No work is needed. |
@@ -77,8 +78,7 @@
 | **Providers and accounts** | | | | | |
 | Several agent providers | Run Codex, Claude Code, Pi, Cursor, OpenCode, and others side by side. | ✓ | Partial | High | Octopus lists about 35 provider descriptors, but its docs say the preview is one provider deep. A second solid provider removes the single-vendor risk and tests the interface design. |
 | Agent Client Protocol agents | Run any agent that speaks the Agent Client Protocol. | ✓ |  | Medium | One adapter opens many agents. This is cheaper than one driver for each product. |
-| Account pool | Rotate across several accounts when one reaches its usage limit. | ✓ |  | Medium | Work continues when one account is limited. Octopus has several ChatGPT sessions, but no rotation. |
-| Account switching | Switch the active provider account or workspace. | ✓ | ✓ | Low | Octopus supports account and workspace switching. No work is needed. |
+| Account pool | Rotate across several accounts when one reaches its usage limit. | ✓ |  | Medium | Work continues when one account is limited. Octopus can switch accounts by hand, but it does not rotate them. |
 | Provider usage display | Show remaining limits, credits, and reset times. | ✓ | ✓ | Low | Octopus shows usage limits and reset times. No work is needed. |
 | Automatic retries | Retry a turn after a temporary provider error, with backoff. | ✓ | Partial | High | Octopus offers a manual Try again action. Automatic retry removes the most common reason a user must watch a run. |
 | Stuck turn timeout | Detect a turn that stops producing events and end it cleanly. | ✓ | Partial | High | Octopus watches interface processes, but no turn-level timeout is confirmed. A silent stuck turn is the worst failure for an unattended agent. |
@@ -130,17 +130,14 @@
 | Terminal command runner | Run a command in a thread's terminal from the command-line tool. | ✓ | Partial | Low | Agents can start and watch long commands in a shared, visible terminal. |
 | Documented HTTP API | A stable HTTP API for scripts and other clients. | ✓ |  | Medium | Outside tools and future web or mobile clients need one stable contract. |
 
-## High priority features
+## Analysis
 
-- Compact conversation
-- Diff review pane
-- Several agent providers
-- Automatic retries
-- Stuck turn timeout
-- Out-of-memory protection
-- Plugin safe mode
-- In-app updates
-- Persisted format migration
+- Octopus has 33 of the 108 BB features, has 32 in part, and lacks 42. Most of what it has is in the conversation and the workspace. Most of what it lacks is in reach (remote, mobile, other platforms), upkeep, and the plugin ecosystem.
+- Suggested order for the High items: first the reliability work (automatic retries, the stuck turn timeout, and out-of-memory protection).
+- Next, persisted format migration. Do this before in-app updates, because an updater is not safe while each new version can break stored data.
+- Then the daily-use gaps: the diff review pane, compact conversation, a second solid provider, and plugin safe mode.
+- Octopus is ahead of BB in restart recovery, the movement ledger, verifiers, and the deny-by-default sandbox. A contribution must not weaken these.
+- Every BB check mark was confirmed in the BB changelog or the BB source. Octopus marks come from a source search, so confirm a blank mark in the running app before you start work on it.
 
 ## Features only Octopus has
 
@@ -151,9 +148,9 @@
 | Deny-by-default sandbox | Runs execute under a macOS sandbox profile with explicit grants. | BB could tighten local execution beyond approval prompts. |
 | Self-review with change journal | A trigger reviews the system, records each change in a journal, and supports undo. | BB could let agents improve conventions with a safe undo. |
 | Home-authored extensions | The Home conversation writes new client extensions and edits the client source. | BB could let users grow the app by asking for it. |
-| Message triggers | Incoming email, Telegram, or Slack messages start work. | BB automations start on time only. |
+| Message triggers | Incoming email, Telegram, or Slack messages start work. | No message-based trigger was found in BB automations. |
 | Setup files | Export and import a whole setup as one file. | BB could make a new machine match an old one in one step. |
-| Voice calls | Talk with Home in a live voice call. | BB has dictation, not conversation. |
+| Voice calls | Talk with Home in a live voice call. | No voice call feature was found in BB. BB has voice recording and transcription. |
 | Gesture control | Experimental hand gestures run client commands. | This is an accessibility and hands-free option. |
-| Lock screen | Lock the app with a password or Touch ID. | BB has no app lock for shared computers. |
-| Review task | Start a review of one task's work by another agent. | BB has diff review for people, not a built-in agent review step. |
+| Lock screen | Lock the app with a password or Touch ID. | No app lock was found in BB. |
+| Review task | Start a review of one task's work by another agent. | BB has diff review for people. No built-in agent review step was found. |
